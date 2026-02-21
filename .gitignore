@@ -1,0 +1,8 @@
+**/handover-log.md
+.idea/
+.task/
+.serena/
+out/
+**/*.exe
+**/*.obj
+**/*.local.*

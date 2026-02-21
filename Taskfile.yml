@@ -1,0 +1,64 @@
+# vi: ts=2 sw=2 ff=unix fenc=utf-8
+version: '3'
+
+vars:
+  REPO_URL: https://github.com/rmyorston/busybox-w32.git
+  SRC_DIR: /tmp/busybox-w32
+  BUILD_DIR: /tmp/busybox-nt-build
+  OUT_DIR: '{{.ROOT_DIR}}/out'
+  DEFCONFIG: mingw64u_defconfig
+
+tasks:
+  clone:
+    desc: busybox-w32 のソースを取得し最新 FRP タグをチェックアウト
+    cmds:
+      - |
+        if [ ! -d "{{.SRC_DIR}}/.git" ]; then
+          git clone {{.REPO_URL}} "{{.SRC_DIR}}"
+        else
+          git -C "{{.SRC_DIR}}" fetch --tags
+        fi
+      - |
+        LATEST=$(git -C "{{.SRC_DIR}}" tag -l 'FRP-*' | sort -t'-' -k2,2 -n | tail -1)
+        if [ -z "$LATEST" ]; then
+          echo "ERROR: FRP タグが見つからない" >&2
+          exit 1
+        fi
+        echo "checkout: $LATEST"
+        git -C "{{.SRC_DIR}}" checkout "$LATEST"
+
+  clean:
+    desc: ビルド作業領域と成果物を削除
+    cmds:
+      - rm -rf "{{.BUILD_DIR}}" "{{.OUT_DIR}}"
+
+  build:
+    desc: x64 UTF-8 対応 busybox.exe をビルド
+    preconditions:
+      - sh: test -d "{{.SRC_DIR}}/.git"
+        msg: "ソースが未取得。先に 'task clone' を実行すること。"
+    cmds:
+      - mkdir -p "{{.BUILD_DIR}}"
+      - |
+        # バージョンを切り替えた場合は task clean を実行してから再ビルドすること
+        if [ ! -f "{{.BUILD_DIR}}/.config" ]; then
+          make -C "{{.SRC_DIR}}" O="{{.BUILD_DIR}}" {{.DEFCONFIG}}
+          sed -i 's/^CONFIG_EXTRA_CFLAGS=.*/CONFIG_EXTRA_CFLAGS="-O2"/' "{{.BUILD_DIR}}/.config"
+        fi
+      - make -C "{{.SRC_DIR}}" O="{{.BUILD_DIR}}" -j$(nproc)
+
+  release:
+    desc: GitHub リリース用成果物を作成
+    deps: [build]
+    cmds:
+      - mkdir -p "{{.OUT_DIR}}"
+      - cp "{{.BUILD_DIR}}/busybox.exe" "{{.OUT_DIR}}/"
+      - |
+        VERSION=$(git -C "{{.SRC_DIR}}" describe --match FRP 2>/dev/null)
+        if [ -z "$VERSION" ]; then
+          echo "ERROR: バージョン情報を取得できない" >&2
+          exit 1
+        fi
+        ZIP_NAME="busybox-${VERSION#FRP-}_x64.zip"
+        zip -j "{{.OUT_DIR}}/$ZIP_NAME" "{{.OUT_DIR}}/busybox.exe"
+        echo "作成: {{.OUT_DIR}}/$ZIP_NAME"
