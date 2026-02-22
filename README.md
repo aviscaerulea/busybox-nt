@@ -48,6 +48,16 @@ task release
 task clean
 ```
 
+## 自動ビルド
+
+GitHub Actions による自動ビルドが設定されている。
+
+| 項目 | 内容 |
+|---|---|
+| 自動実行 | 毎日定時に上流リポジトリの新タグを検知し、新バージョンがあれば自動でビルド・リリース |
+| 手動実行 | GitHub Actions の「Run workflow」ボタンから手動トリガー可能 |
+| 成果物 | [Releases](https://github.com/aviscaerulea/busybox-nt/releases) ページで公開 |
+
 ## ディレクトリ構成
 
 ```
