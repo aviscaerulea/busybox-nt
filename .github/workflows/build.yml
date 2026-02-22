@@ -9,21 +9,25 @@ on:
 permissions:
   contents: write
 
+# Taskfile.yml の vars セクションと対応する定数
+env:
+  SRC_DIR: /tmp/busybox-w32
+  BUILD_DIR: /tmp/busybox-nt-build
+  DEFCONFIG: mingw64u_defconfig
+
 jobs:
   build:
     runs-on: ubuntu-latest
     steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-
       - name: Check for new upstream tag
         id: check
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          # 上流リポジトリから最新の FRP-* タグを取得
-          LATEST_TAG=$(gh api repos/rmyorston/busybox-w32/tags --paginate \
-            --jq '.[].name' | grep '^FRP-' | sort -t'-' -k2,2 -n | tail -1)
+          # git ls-remote で上流リポジトリから最新の FRP-* タグを取得（API レート制限を消費しない）
+          LATEST_TAG=$(git ls-remote --tags \
+            https://github.com/rmyorston/busybox-w32.git 'refs/tags/FRP-*' \
+            | sed 's|.*refs/tags/||' | grep -v '\^{}' | sort -t'-' -k2,2 -n | tail -1)
 
           if [ -z "$LATEST_TAG" ]; then
             echo "ERROR: FRP タグが見つからない" >&2
@@ -36,7 +40,7 @@ jobs:
           echo "version=$VERSION" >> "$GITHUB_OUTPUT"
 
           # 自リポに同バージョンのリリースが既に存在するかチェック
-          if gh release view "$VERSION" > /dev/null 2>&1; then
+          if gh release view "$VERSION" --repo "${{ github.repository }}" > /dev/null 2>&1; then
             echo "既にリリース済み ($VERSION)、スキップ"
             echo "skip=true" >> "$GITHUB_OUTPUT"
           else
@@ -51,16 +55,16 @@ jobs:
       - name: Clone and checkout busybox-w32
         if: steps.check.outputs.skip == 'false'
         run: |
-          git clone https://github.com/rmyorston/busybox-w32.git /tmp/busybox-w32
-          git -C /tmp/busybox-w32 checkout "${{ steps.check.outputs.latest_tag }}"
+          git clone https://github.com/rmyorston/busybox-w32.git "$SRC_DIR"
+          git -C "$SRC_DIR" checkout "${{ steps.check.outputs.latest_tag }}"
 
       - name: Build
         if: steps.check.outputs.skip == 'false'
         run: |
-          mkdir -p /tmp/busybox-nt-build
-          make -C /tmp/busybox-w32 O=/tmp/busybox-nt-build mingw64u_defconfig
-          sed -i 's/^CONFIG_EXTRA_CFLAGS=.*/CONFIG_EXTRA_CFLAGS="-O2"/' /tmp/busybox-nt-build/.config
-          make -C /tmp/busybox-w32 O=/tmp/busybox-nt-build -j$(nproc)
+          mkdir -p "$BUILD_DIR"
+          make -C "$SRC_DIR" O="$BUILD_DIR" "$DEFCONFIG"
+          sed -i 's/^CONFIG_EXTRA_CFLAGS=.*/CONFIG_EXTRA_CFLAGS="-O2"/' "$BUILD_DIR/.config"
+          make -C "$SRC_DIR" O="$BUILD_DIR" -j$(nproc)
 
       - name: Create release archive
         if: steps.check.outputs.skip == 'false'
@@ -68,7 +72,7 @@ jobs:
         run: |
           VERSION="${{ steps.check.outputs.version }}"
           ZIP_NAME="busybox-${VERSION}_x64.zip"
-          zip -j "$ZIP_NAME" /tmp/busybox-nt-build/busybox.exe
+          zip -j "$ZIP_NAME" "$BUILD_DIR/busybox.exe"
           echo "zip_name=$ZIP_NAME" >> "$GITHUB_OUTPUT"
 
       - name: Create GitHub Release
@@ -76,6 +80,8 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          VERSION="${{ steps.check.outputs.version }}"
-          ZIP_NAME="${{ steps.archive.outputs.zip_name }}"
-          gh release create "$VERSION" "$ZIP_NAME" --title "$VERSION" --notes ""
+          gh release create "${{ steps.check.outputs.version }}" \
+            "${{ steps.archive.outputs.zip_name }}" \
+            --title "${{ steps.check.outputs.version }}" \
+            --notes "" \
+            --repo "${{ github.repository }}"
