@@ -14,6 +14,9 @@ env:
   SRC_DIR: /tmp/busybox-w32
   BUILD_DIR: /tmp/busybox-nt-build
   DEFCONFIG: mingw64u_defconfig
+  GNU_BUILD_DIR: /tmp/gnu-tools-build
+  SED_VERSION: "4.9"
+  GREP_VERSION: "3.12"
 
 jobs:
   build:
@@ -66,13 +69,76 @@ jobs:
           sed -i 's/^CONFIG_EXTRA_CFLAGS=.*/CONFIG_EXTRA_CFLAGS="-O2"/' "$BUILD_DIR/.config"
           make -C "$SRC_DIR" O="$BUILD_DIR" -j$(nproc)
 
+      - name: Build text processing tools
+        if: steps.check.outputs.skip == 'false'
+        run: |
+          mkdir -p "$GNU_BUILD_DIR"
+
+          # UTF-8 マニフェストオブジェクトを準備（Windows activeCodePage=UTF-8）
+          MANIFEST_DIR="$GNU_BUILD_DIR/manifest"
+          MANIFEST_OBJ="$MANIFEST_DIR/utf8_manifest.o"
+          mkdir -p "$MANIFEST_DIR"
+          echo '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>' > "$MANIFEST_DIR/utf8.manifest"
+          echo '<assembly manifestVersion="1.0" xmlns="urn:schemas-microsoft-com:asm.v1">' >> "$MANIFEST_DIR/utf8.manifest"
+          echo '  <assemblyIdentity type="win32" name="tool.exe" version="6.0.0.0"/>' >> "$MANIFEST_DIR/utf8.manifest"
+          echo '  <application>' >> "$MANIFEST_DIR/utf8.manifest"
+          echo '    <windowsSettings>' >> "$MANIFEST_DIR/utf8.manifest"
+          echo '      <activeCodePage xmlns="http://schemas.microsoft.com/SMI/2019/WindowsSettings">UTF-8</activeCodePage>' >> "$MANIFEST_DIR/utf8.manifest"
+          echo '    </windowsSettings>' >> "$MANIFEST_DIR/utf8.manifest"
+          echo '  </application>' >> "$MANIFEST_DIR/utf8.manifest"
+          echo '</assembly>' >> "$MANIFEST_DIR/utf8.manifest"
+          echo '1 RT_MANIFEST utf8.manifest' > "$MANIFEST_DIR/utf8_manifest.rc"
+          cd "$MANIFEST_DIR" && x86_64-w64-mingw32-windres --include-dir . utf8_manifest.rc -o "$MANIFEST_OBJ"
+
+          # GNU sed
+          SED_MK="$GNU_BUILD_DIR/sed-$SED_VERSION/build-mingw64/Makefile"
+          if [ ! -f "$GNU_BUILD_DIR/sed-$SED_VERSION/build-mingw64/sed/sed.exe" ]; then
+            wget -q -O "$GNU_BUILD_DIR/sed-$SED_VERSION.tar.xz" "https://ftp.gnu.org/gnu/sed/sed-$SED_VERSION.tar.xz"
+            tar -C "$GNU_BUILD_DIR" -xf "$GNU_BUILD_DIR/sed-$SED_VERSION.tar.xz"
+            mkdir -p "$GNU_BUILD_DIR/sed-$SED_VERSION/build-mingw64"
+            cd "$GNU_BUILD_DIR/sed-$SED_VERSION/build-mingw64"
+            ../configure --host=x86_64-w64-mingw32 --disable-nls LDFLAGS="-static" LIBS="-lbcrypt" > /dev/null 2>&1
+            grep -q "$MANIFEST_OBJ" "$SED_MK" || \
+              sed -i "s|^sed_sed_LDADD = .*|& $MANIFEST_OBJ|" "$SED_MK"
+            make -j$(nproc) 2>&1 | tail -2
+          fi
+
+          # mawk
+          wget -q -O "$GNU_BUILD_DIR/mawk.tar.gz" https://invisible-island.net/datafiles/release/mawk.tar.gz
+          tar -C "$GNU_BUILD_DIR" -xf "$GNU_BUILD_DIR/mawk.tar.gz"
+          MAWK_DIR=$(ls -d "$GNU_BUILD_DIR"/mawk-* | head -1)
+          mkdir -p "$MAWK_DIR/build-mingw64"
+          cd "$MAWK_DIR/build-mingw64"
+          ../configure --host=x86_64-w64-mingw32 LDFLAGS="-static" > /dev/null 2>&1
+          make -j$(nproc) 2>&1 | tail -2
+          OBJS=$(ls *.o | tr '\n' ' ')
+          x86_64-w64-mingw32-gcc -g -O2 -static -o mawk.exe $OBJS "$MANIFEST_OBJ" -lm
+
+          # GNU grep
+          GREP_MK="$GNU_BUILD_DIR/grep-$GREP_VERSION/build-mingw64/src/Makefile"
+          if [ ! -f "$GNU_BUILD_DIR/grep-$GREP_VERSION/build-mingw64/src/grep.exe" ]; then
+            wget -q -O "$GNU_BUILD_DIR/grep-$GREP_VERSION.tar.xz" "https://ftp.gnu.org/gnu/grep/grep-$GREP_VERSION.tar.xz"
+            tar -C "$GNU_BUILD_DIR" -xf "$GNU_BUILD_DIR/grep-$GREP_VERSION.tar.xz"
+            mkdir -p "$GNU_BUILD_DIR/grep-$GREP_VERSION/build-mingw64"
+            cd "$GNU_BUILD_DIR/grep-$GREP_VERSION/build-mingw64"
+            ../configure --host=x86_64-w64-mingw32 --disable-nls --disable-perl-regexp LDFLAGS="-static" > /dev/null 2>&1
+            grep -q "$MANIFEST_OBJ" "$GREP_MK" || \
+              sed -i "s|^grep_LDADD = .*|& $MANIFEST_OBJ|" "$GREP_MK"
+            make -j$(nproc) 2>&1 | tail -2
+          fi
+
       - name: Create release archive
         if: steps.check.outputs.skip == 'false'
         id: archive
         run: |
           VERSION="${{ steps.check.outputs.version }}"
           ZIP_NAME="busybox-${VERSION}_x64.zip"
-          zip -j "$ZIP_NAME" "$BUILD_DIR/busybox.exe"
+          MAWK_EXE=$(ls "$GNU_BUILD_DIR"/mawk-*/build-mingw64/mawk.exe | head -1)
+          zip -j "$ZIP_NAME" \
+            "$BUILD_DIR/busybox.exe" \
+            "$GNU_BUILD_DIR/sed-$SED_VERSION/build-mingw64/sed/sed.exe" \
+            "$MAWK_EXE" \
+            "$GNU_BUILD_DIR/grep-$GREP_VERSION/build-mingw64/src/grep.exe"
           echo "zip_name=$ZIP_NAME" >> "$GITHUB_OUTPUT"
 
       - name: Create GitHub Release

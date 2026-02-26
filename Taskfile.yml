@@ -7,6 +7,10 @@ vars:
   BUILD_DIR: /tmp/busybox-nt-build
   OUT_DIR: '{{.ROOT_DIR}}/out'
   DEFCONFIG: mingw64u_defconfig
+  # テキスト処理ツール（sed/mawk/grep）のビルドに使用
+  GNU_BUILD_DIR: /tmp/gnu-tools-build
+  SED_VERSION: "4.9"
+  GREP_VERSION: "3.12"
 
 tasks:
   clone:
@@ -30,7 +34,7 @@ tasks:
   clean:
     desc: ビルド作業領域と成果物を削除
     cmds:
-      - rm -rf "{{.BUILD_DIR}}" "{{.OUT_DIR}}"
+      - rm -rf "{{.BUILD_DIR}}" "{{.GNU_BUILD_DIR}}" "{{.OUT_DIR}}"
 
   build:
     desc: x64 UTF-8 対応 busybox.exe をビルド
@@ -47,12 +51,109 @@ tasks:
         fi
       - make -C "{{.SRC_DIR}}" O="{{.BUILD_DIR}}" -j$(nproc)
 
+  gnu-tools:
+    desc: sed/mawk/grep を mingw-w64 でクロスコンパイル（UTF-8 マニフェスト付き）
+    cmds:
+      - mkdir -p "{{.GNU_BUILD_DIR}}"
+      - |
+        # UTF-8 マニフェストオブジェクトを準備（Windows activeCodePage=UTF-8）
+        MANIFEST_DIR="{{.GNU_BUILD_DIR}}/manifest"
+        MANIFEST_OBJ="$MANIFEST_DIR/utf8_manifest.o"
+        mkdir -p "$MANIFEST_DIR"
+        if [ ! -f "$MANIFEST_OBJ" ]; then
+          echo '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>' > "$MANIFEST_DIR/utf8.manifest"
+          echo '<assembly manifestVersion="1.0" xmlns="urn:schemas-microsoft-com:asm.v1">' >> "$MANIFEST_DIR/utf8.manifest"
+          echo '  <assemblyIdentity type="win32" name="tool.exe" version="6.0.0.0"/>' >> "$MANIFEST_DIR/utf8.manifest"
+          echo '  <application>' >> "$MANIFEST_DIR/utf8.manifest"
+          echo '    <windowsSettings>' >> "$MANIFEST_DIR/utf8.manifest"
+          echo '      <activeCodePage xmlns="http://schemas.microsoft.com/SMI/2019/WindowsSettings">UTF-8</activeCodePage>' >> "$MANIFEST_DIR/utf8.manifest"
+          echo '    </windowsSettings>' >> "$MANIFEST_DIR/utf8.manifest"
+          echo '  </application>' >> "$MANIFEST_DIR/utf8.manifest"
+          echo '</assembly>' >> "$MANIFEST_DIR/utf8.manifest"
+          echo '1 RT_MANIFEST utf8.manifest' > "$MANIFEST_DIR/utf8_manifest.rc"
+          cd "$MANIFEST_DIR" && x86_64-w64-mingw32-windres --include-dir . utf8_manifest.rc -o "$MANIFEST_OBJ"
+        fi
+      - |
+        # GNU sed {{.SED_VERSION}}
+        SED_EXE="{{.GNU_BUILD_DIR}}/sed-{{.SED_VERSION}}/build-mingw64/sed/sed.exe"
+        MANIFEST_OBJ="{{.GNU_BUILD_DIR}}/manifest/utf8_manifest.o"
+        SED_MK="{{.GNU_BUILD_DIR}}/sed-{{.SED_VERSION}}/build-mingw64/Makefile"
+        if [ ! -f "$SED_EXE" ]; then
+          SED_TAR="{{.GNU_BUILD_DIR}}/sed-{{.SED_VERSION}}.tar.xz"
+          [ ! -f "$SED_TAR" ] && wget -q -O "$SED_TAR" "https://ftp.gnu.org/gnu/sed/sed-{{.SED_VERSION}}.tar.xz"
+          [ ! -d "{{.GNU_BUILD_DIR}}/sed-{{.SED_VERSION}}" ] && tar -C "{{.GNU_BUILD_DIR}}" -xf "$SED_TAR"
+          mkdir -p "{{.GNU_BUILD_DIR}}/sed-{{.SED_VERSION}}/build-mingw64"
+          cd "{{.GNU_BUILD_DIR}}/sed-{{.SED_VERSION}}/build-mingw64" && \
+            ../configure --host=x86_64-w64-mingw32 --disable-nls LDFLAGS="-static" LIBS="-lbcrypt" > /dev/null 2>&1
+          grep -q "$MANIFEST_OBJ" "$SED_MK" || \
+            /usr/bin/sed -i "s|^sed_sed_LDADD = .*|& $MANIFEST_OBJ|" "$SED_MK"
+          make -C "{{.GNU_BUILD_DIR}}/sed-{{.SED_VERSION}}/build-mingw64" -j$(nproc) 2>&1 | tail -2
+        fi
+        # マニフェスト未埋め込みの場合は再リンク
+        if ! strings "$SED_EXE" | grep -q 'activeCodePage'; then
+          grep -q "$MANIFEST_OBJ" "$SED_MK" || \
+            /usr/bin/sed -i "s|^sed_sed_LDADD = .*|& $MANIFEST_OBJ|" "$SED_MK"
+          rm -f "$SED_EXE"
+          make -C "{{.GNU_BUILD_DIR}}/sed-{{.SED_VERSION}}/build-mingw64" 2>&1 | tail -2
+        fi
+        echo "sed OK: $(ls -lh "$SED_EXE" | awk '{print $5}')"
+      - |
+        # mawk（最新版を動的取得）
+        MANIFEST_OBJ="{{.GNU_BUILD_DIR}}/manifest/utf8_manifest.o"
+        if [ ! -d "{{.GNU_BUILD_DIR}}"/mawk-* ] 2>/dev/null; then
+          wget -q -O "{{.GNU_BUILD_DIR}}/mawk.tar.gz" https://invisible-island.net/datafiles/release/mawk.tar.gz
+          tar -C "{{.GNU_BUILD_DIR}}" -xf "{{.GNU_BUILD_DIR}}/mawk.tar.gz"
+        fi
+        MAWK_DIR=$(ls -d "{{.GNU_BUILD_DIR}}"/mawk-* | head -1)
+        MAWK_EXE="$MAWK_DIR/build-mingw64/mawk.exe"
+        if [ ! -f "$MAWK_EXE" ]; then
+          mkdir -p "$MAWK_DIR/build-mingw64"
+          cd "$MAWK_DIR/build-mingw64" && \
+            ../configure --host=x86_64-w64-mingw32 LDFLAGS="-static" > /dev/null 2>&1 && \
+            make -j$(nproc) 2>&1 | tail -2
+        fi
+        # マニフェスト未埋め込みの場合は再リンク（mawk は Makefile 経由でなく手動リンク）
+        if ! strings "$MAWK_EXE" | grep -q 'activeCodePage'; then
+          OBJS=$(ls "$MAWK_DIR/build-mingw64/"*.o | tr '\n' ' ')
+          x86_64-w64-mingw32-gcc -g -O2 -static -o "$MAWK_EXE" $OBJS "$MANIFEST_OBJ" -lm
+        fi
+        echo "mawk OK: $(ls -lh "$MAWK_EXE" | awk '{print $5}')"
+      - |
+        # GNU grep {{.GREP_VERSION}}
+        MANIFEST_OBJ="{{.GNU_BUILD_DIR}}/manifest/utf8_manifest.o"
+        GREP_EXE="{{.GNU_BUILD_DIR}}/grep-{{.GREP_VERSION}}/build-mingw64/src/grep.exe"
+        GREP_MK="{{.GNU_BUILD_DIR}}/grep-{{.GREP_VERSION}}/build-mingw64/src/Makefile"
+        if [ ! -f "$GREP_EXE" ]; then
+          GREP_TAR="{{.GNU_BUILD_DIR}}/grep-{{.GREP_VERSION}}.tar.xz"
+          [ ! -f "$GREP_TAR" ] && wget -q -O "$GREP_TAR" "https://ftp.gnu.org/gnu/grep/grep-{{.GREP_VERSION}}.tar.xz"
+          [ ! -d "{{.GNU_BUILD_DIR}}/grep-{{.GREP_VERSION}}" ] && tar -C "{{.GNU_BUILD_DIR}}" -xf "$GREP_TAR"
+          mkdir -p "{{.GNU_BUILD_DIR}}/grep-{{.GREP_VERSION}}/build-mingw64"
+          cd "{{.GNU_BUILD_DIR}}/grep-{{.GREP_VERSION}}/build-mingw64" && \
+            ../configure --host=x86_64-w64-mingw32 --disable-nls --disable-perl-regexp LDFLAGS="-static" > /dev/null 2>&1
+          grep -q "$MANIFEST_OBJ" "$GREP_MK" || \
+            /usr/bin/sed -i "s|^grep_LDADD = .*|& $MANIFEST_OBJ|" "$GREP_MK"
+          make -C "{{.GNU_BUILD_DIR}}/grep-{{.GREP_VERSION}}/build-mingw64" -j$(nproc) 2>&1 | tail -2
+        fi
+        # マニフェスト未埋め込みの場合は再リンク
+        if ! strings "$GREP_EXE" | grep -q 'activeCodePage'; then
+          grep -q "$MANIFEST_OBJ" "$GREP_MK" || \
+            /usr/bin/sed -i "s|^grep_LDADD = .*|& $MANIFEST_OBJ|" "$GREP_MK"
+          rm -f "$GREP_EXE"
+          make -C "{{.GNU_BUILD_DIR}}/grep-{{.GREP_VERSION}}/build-mingw64/src" grep.exe 2>&1 | tail -2
+        fi
+        echo "grep OK: $(ls -lh "$GREP_EXE" | awk '{print $5}')"
+
   release:
     desc: GitHub リリース用成果物を作成
-    deps: [build]
+    deps: [build, gnu-tools]
     cmds:
       - mkdir -p "{{.OUT_DIR}}"
       - cp "{{.BUILD_DIR}}/busybox.exe" "{{.OUT_DIR}}/"
+      - cp "{{.GNU_BUILD_DIR}}/sed-{{.SED_VERSION}}/build-mingw64/sed/sed.exe" "{{.OUT_DIR}}/"
+      - |
+        MAWK_EXE=$(ls "{{.GNU_BUILD_DIR}}"/mawk-*/build-mingw64/mawk.exe | head -1)
+        cp "$MAWK_EXE" "{{.OUT_DIR}}/"
+      - cp "{{.GNU_BUILD_DIR}}/grep-{{.GREP_VERSION}}/build-mingw64/src/grep.exe" "{{.OUT_DIR}}/"
       - |
         VERSION=$(git -C "{{.SRC_DIR}}" describe --match FRP 2>/dev/null)
         if [ -z "$VERSION" ]; then
@@ -60,5 +161,9 @@ tasks:
           exit 1
         fi
         ZIP_NAME="busybox-${VERSION#FRP-}_x64.zip"
-        zip -j "{{.OUT_DIR}}/$ZIP_NAME" "{{.OUT_DIR}}/busybox.exe"
+        zip -j "{{.OUT_DIR}}/$ZIP_NAME" \
+          "{{.OUT_DIR}}/busybox.exe" \
+          "{{.OUT_DIR}}/sed.exe" \
+          "{{.OUT_DIR}}/mawk.exe" \
+          "{{.OUT_DIR}}/grep.exe"
         echo "作成: {{.OUT_DIR}}/$ZIP_NAME"
