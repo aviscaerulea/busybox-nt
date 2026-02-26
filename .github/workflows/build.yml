@@ -66,7 +66,11 @@ jobs:
         run: |
           mkdir -p "$BUILD_DIR"
           make -C "$SRC_DIR" O="$BUILD_DIR" "$DEFCONFIG"
-          sed -i 's/^CONFIG_EXTRA_CFLAGS=.*/CONFIG_EXTRA_CFLAGS="-O2"/' "$BUILD_DIR/.config"
+          sed -i \
+            -e 's/^CONFIG_EXTRA_CFLAGS=.*/CONFIG_EXTRA_CFLAGS="-O2"/' \
+            -e 's/^CONFIG_FEATURE_PREFER_APPLETS=y/CONFIG_FEATURE_PREFER_APPLETS=n/' \
+            -e 's/^CONFIG_FEATURE_SH_STANDALONE=y/CONFIG_FEATURE_SH_STANDALONE=n/' \
+            "$BUILD_DIR/.config"
           make -C "$SRC_DIR" O="$BUILD_DIR" -j$(nproc)
 
       - name: Build text processing tools

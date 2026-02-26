@@ -1,5 +1,3 @@
-# busybox-nt
-
 Windows 向けに UTF-8 対応・速度最適化した [busybox-w32](https://github.com/rmyorston/busybox-w32) のビルドシステム。
 
 ## 概要
@@ -11,9 +9,9 @@ Windows 向けに UTF-8 対応・速度最適化した [busybox-w32](https://git
 | ファイル | ベース | 特徴 |
 |---|---|---|
 | `busybox.exe` | busybox-w32 | UTF-8 対応、多数の Unix コマンドを内包 |
-| `sed.exe` | GNU sed 4.9 | UTF-8 対応テキスト置換・変換 |
-| `mawk.exe` | mawk 1.3.4 | POSIX awk 互換・高速 |
-| `grep.exe` | GNU grep 3.12 | UTF-8 対応パターン検索 |
+| `sed.exe` | GNU sed v4.9 | UTF-8 対応テキスト置換・変換 |
+| `mawk.exe` | mawk v1.3.4 | POSIX awk 互換・高速 |
+| `grep.exe` | GNU grep v3.12 | UTF-8 対応パターン検索 |
 
 busybox.exe のビルド設定は以下の通り。
 
@@ -23,9 +21,10 @@ busybox.exe のビルド設定は以下の通り。
 | defconfig | `mingw64u_defconfig` |
 | 最適化 | `-O2`（速度優先） |
 | Unicode 対応 | UTF-8 マニフェスト、入出力、幅処理（CJK 全角・結合文字）|
+| アプレット優先 | 無効（`PREFER_APPLETS=n`, `SH_STANDALONE=n`）→ PATH 上の外部コマンド優先 |
 
-> **補足**: busybox 内蔵の sed/grep はバイト処理でマルチバイト文字に非対応。
-> 日本語などの UTF-8 テキスト処理には同梱の `sed.exe` / `grep.exe` を使用すること。
+> **補足**: busybox 内蔵の sed/grep/awk はバイト処理でマルチバイト文字に非対応。
+> PATH 上に同梱の `sed.exe` / `grep.exe` があれば自動的にそちらが使用される（`PREFER_APPLETS=n` 設定）。
 
 ## 必要なツールキット
 
