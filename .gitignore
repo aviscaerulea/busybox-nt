@@ -6,3 +6,5 @@ out/
 **/*.exe
 **/*.obj
 **/*.local.*
+**/.env
+.clasp.json

@@ -1,5 +1,14 @@
 Windows 向けに UTF-8 対応・速度最適化した [busybox-w32](https://github.com/rmyorston/busybox-w32) のビルドシステム。
 
+## インストール
+
+[Scoop](https://scoop.sh/) でインストールできる。
+
+```powershell
+scoop bucket add aviscaerulea https://github.com/aviscaerulea/scoop-bucket
+scoop install busybox-nt
+```
+
 ## 概要
 
 [busybox-w32](https://github.com/rmyorston/busybox-w32) は BusyBox の Windows ネイティブ移植版で、Windows 上で `ls`, `grep`, `awk` などの Unix コマンドを単一の実行ファイルとして提供する。
